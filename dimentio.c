@@ -509,7 +509,8 @@ dimentio(uint64_t nonce) {
 								printf("string_ptr: " KADDR_FMT "\n", string_ptr);
 								snprintf(nonce_hex, sizeof(nonce_hex), "0x%016" PRIx64, nonce);
 								if(kwrite_buf(string_ptr, nonce_hex, sizeof(nonce_hex)) == KERN_SUCCESS && sync_nonce(nvram_serv) == KERN_SUCCESS) {
-									printf("Set nonce to 0x%016" PRIx64 "\n", nonce);
+                                    printf("Set nonce to 0x%016" PRIx64 "\n", nonce);
+                                    printf("Exiting Now!");
 								}
 							}
 						}
@@ -523,30 +524,26 @@ dimentio(uint64_t nonce) {
 }
 
 int
-main(int argc, char **argv) {
+main() {
 	kaddr_t kbase, kslide;
 	pfinder_t pfinder;
-	uint64_t nonce;
+	uint64_t nonce = 0x1111111111111111;
 
-	if(argc == 2 && sscanf(argv[1], "0x%016" PRIx64, &nonce) == 1) {
-		if(init_arm_pgshift() == KERN_SUCCESS) {
-			printf("arm_pgshift: %u\n", arm_pgshift);
-			if(init_tfp0() == KERN_SUCCESS) {
-				printf("tfp0: 0x%" PRIx32 "\n", tfp0);
-				if((kbase = get_kbase(&kslide))) {
-					printf("kbase: " KADDR_FMT "\n", kbase);
-					printf("kslide: " KADDR_FMT "\n", kslide);
-					if(pfinder_init(&pfinder, kbase) == KERN_SUCCESS) {
-						if(pfinder_init_offsets(pfinder) == KERN_SUCCESS) {
-							dimentio(nonce);
-						}
-						pfinder_term(&pfinder);
-					}
-				}
-				mach_port_deallocate(mach_task_self(), tfp0);
-			}
-		}
-	} else {
-		printf("Usage: %s nonce\n", argv[0]);
-	}
+    if(init_arm_pgshift() == KERN_SUCCESS) {
+        printf("arm_pgshift: %u\n", arm_pgshift);
+        if(init_tfp0() == KERN_SUCCESS) {
+            printf("tfp0: 0x%" PRIx32 "\n", tfp0);
+            if((kbase = get_kbase(&kslide))) {
+                printf("kbase: " KADDR_FMT "\n", kbase);
+                printf("kslide: " KADDR_FMT "\n", kslide);
+                if(pfinder_init(&pfinder, kbase) == KERN_SUCCESS) {
+                    if(pfinder_init_offsets(pfinder) == KERN_SUCCESS) {
+                        dimentio(nonce);
+                    }
+                    pfinder_term(&pfinder);
+                }
+            }
+            mach_port_deallocate(mach_task_self(), tfp0);
+        }
+    }
 }

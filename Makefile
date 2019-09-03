@@ -2,6 +2,6 @@
 
 all:
 	xcrun -sdk iphoneos clang -arch arm64 -arch arm64e -Weverything dimentio.c -o dimentio -framework IOKit -framework CoreFoundation -O2
-
+	codesign -s ${CODESIGN_IDENTITY} --entitlements tfp0.plist dimentio
 clean:
 	$(RM) dimentio
