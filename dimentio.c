@@ -5,20 +5,24 @@
 #include <sys/sysctl.h>
 
 #define PROC_TASK_OFF (0x10)
-#define PROC_P_PID_OFF (0x60)
 #define OS_STRING_STRING_OFF (0x10)
 #define OS_DICTIONARY_COUNT_OFF (0x14)
 #define IPC_PORT_IP_KOBJECT_OFF (0x68)
 #define IO_DT_NVRAM_OF_DICT_OFF (0xC0)
-#define TASK_ITK_REGISTERED_OFF (0x2E8)
 #define OS_DICTIONARY_DICT_ENTRY_OFF (0x20)
+#define CPU_DATA_CPU_EXC_VECTORS_OFF (0xE0)
 #define VM_KERNEL_LINK_ADDRESS (0xFFFFFFF007004000ULL)
 #define APPLE_MOBILE_AP_NONCE_GENERATE_NONCE_SEL (0xC8)
+#define kCFCoreFoundationVersionNumber_iOS_13_0_b2 (1656)
+#define kCFCoreFoundationVersionNumber_iOS_13_0_b1 (1652.20)
 #define APPLE_MOBILE_AP_NONCE_BOOT_NONCE_OS_SYMBOL_OFF (0xC0)
+#define PROC_P_PID_OFF (kCFCoreFoundationVersionNumber >= kCFCoreFoundationVersionNumber_iOS_13_0_b2 ? 0x68 : 0x60)
+#define TASK_ITK_REGISTERED_OFF (kCFCoreFoundationVersionNumber >= kCFCoreFoundationVersionNumber_iOS_13_0_b1 ? 0x308 : 0x2E8)
 
 #define ARM_PGSHIFT_4K (12U)
 #define ARM_PGSHIFT_16K (14U)
 #define KADDR_FMT "0x%" PRIx64
+#define VM_KERN_MEMORY_CPU (9)
 #define RD(a) extract32(a, 0, 5)
 #define RN(a) extract32(a, 5, 5)
 #define SHA384_DIGEST_LENGTH (48)
@@ -74,9 +78,6 @@ typedef struct {
 } dict_entry_t;
 
 kern_return_t
-mach_vm_allocate(vm_map_t, mach_vm_address_t *, mach_vm_size_t, int);
-
-kern_return_t
 mach_vm_write(vm_map_t, mach_vm_address_t, vm_offset_t, mach_msg_type_number_t);
 
 kern_return_t
@@ -86,7 +87,7 @@ kern_return_t
 mach_vm_machine_attribute(vm_map_t, mach_vm_address_t, mach_vm_size_t, vm_machine_attribute_t, vm_machine_attribute_val_t *);
 
 kern_return_t
-mach_vm_deallocate(vm_map_t, mach_vm_address_t, mach_vm_size_t);
+mach_vm_region(vm_map_t, mach_vm_address_t *, mach_vm_size_t *, vm_region_flavor_t, vm_region_info_t, mach_msg_type_number_t *, mach_port_t *);
 
 kern_return_t
 IOObjectRelease(io_object_t);
@@ -127,26 +128,27 @@ sextract64(uint64_t value, unsigned start, unsigned length) {
 
 static kern_return_t
 init_arm_pgshift(void) {
-    int cpufamily = CPUFAMILY_UNKNOWN;
-    size_t len = sizeof(cpufamily);
-    
-    if(!sysctlbyname("hw.cpufamily", &cpufamily, &len, NULL, 0)) {
-        switch(cpufamily) {
-            case CPUFAMILY_ARM_CYCLONE:
-            case CPUFAMILY_ARM_TYPHOON:
-                arm_pgshift = ARM_PGSHIFT_4K;
-                return KERN_SUCCESS;
-            case CPUFAMILY_ARM_TWISTER:
-            case CPUFAMILY_ARM_HURRICANE:
-            case CPUFAMILY_ARM_MONSOON_MISTRAL:
-            case CPUFAMILY_ARM_VORTEX_TEMPEST:
-                arm_pgshift = ARM_PGSHIFT_16K;
-                return KERN_SUCCESS;
-            default:
-                break;
-        }
-    }
-    return KERN_FAILURE;
+	int cpufamily = CPUFAMILY_UNKNOWN;
+	size_t len = sizeof(cpufamily);
+
+	if(!sysctlbyname("hw.cpufamily", &cpufamily, &len, NULL, 0)) {
+		switch(cpufamily) {
+			case CPUFAMILY_ARM_CYCLONE:
+			case CPUFAMILY_ARM_TYPHOON:
+				arm_pgshift = ARM_PGSHIFT_4K;
+				return KERN_SUCCESS;
+			case CPUFAMILY_ARM_TWISTER:
+			case CPUFAMILY_ARM_HURRICANE:
+			case CPUFAMILY_ARM_MONSOON_MISTRAL:
+			case CPUFAMILY_ARM_VORTEX_TEMPEST:
+			case CPUFAMILY_ARM_LIGHTNING_THUNDER:
+				arm_pgshift = ARM_PGSHIFT_16K;
+				return KERN_SUCCESS;
+			default:
+				break;
+		}
+	}
+	return KERN_FAILURE;
 }
 
 static kern_return_t
@@ -170,18 +172,6 @@ init_tfp0(void) {
         mach_port_deallocate(mach_task_self(), tfp0);
     }
     return KERN_FAILURE;
-}
-
-static kaddr_t
-get_kbase(kaddr_t *kslide) {
-    mach_msg_type_number_t cnt = TASK_DYLD_INFO_COUNT;
-    task_dyld_info_data_t dyld_info;
-    
-    if(task_info(tfp0, TASK_DYLD_INFO, (task_info_t)&dyld_info, &cnt) == KERN_SUCCESS) {
-        *kslide = dyld_info.all_image_info_size;
-        return VM_KERNEL_LINK_ADDRESS + *kslide;
-    }
-    return 0;
 }
 
 static kern_return_t
@@ -235,6 +225,43 @@ kwrite_buf(kaddr_t addr, const void *buf, mach_msg_type_number_t sz) {
         addr += write_sz;
     }
     return KERN_SUCCESS;
+}
+
+static kaddr_t
+get_kbase(kaddr_t *kslide) {
+	mach_msg_type_number_t cnt = TASK_DYLD_INFO_COUNT;
+	vm_region_extended_info_data_t extended_info;
+	task_dyld_info_data_t dyld_info;
+	kaddr_t addr, cpu_exc_vectors;
+	mach_port_t obj_nm;
+	mach_vm_size_t sz;
+	uint32_t magic;
+
+	if(task_info(tfp0, TASK_DYLD_INFO, (task_info_t)&dyld_info, &cnt) == KERN_SUCCESS && dyld_info.all_image_info_size) {
+		*kslide = dyld_info.all_image_info_size;
+		return VM_KERNEL_LINK_ADDRESS + *kslide;
+	}
+	addr = 0;
+	cnt = VM_REGION_EXTENDED_INFO_COUNT;
+	while(mach_vm_region(tfp0, &addr, &sz, VM_REGION_EXTENDED_INFO, (vm_region_info_t)&extended_info, &cnt, &obj_nm) == KERN_SUCCESS) {
+		mach_port_deallocate(mach_task_self(), obj_nm);
+		if(extended_info.user_tag == VM_KERN_MEMORY_CPU && extended_info.protection == VM_PROT_DEFAULT) {
+			if(kread_addr(addr + CPU_DATA_CPU_EXC_VECTORS_OFF, &cpu_exc_vectors) != KERN_SUCCESS || (cpu_exc_vectors & ARM_PGMASK)) {
+				break;
+			}
+			printf("cpu_exc_vectors: " KADDR_FMT "\n", cpu_exc_vectors);
+			do {
+				cpu_exc_vectors -= ARM_PGBYTES;
+				if(cpu_exc_vectors <= VM_KERNEL_LINK_ADDRESS || kread_buf(cpu_exc_vectors, &magic, sizeof(magic)) != KERN_SUCCESS) {
+					return 0;
+				}
+			} while(magic != MH_MAGIC_64);
+			*kslide = cpu_exc_vectors - VM_KERNEL_LINK_ADDRESS;
+			return cpu_exc_vectors;
+		}
+		addr += sz;
+	}
+	return 0;
 }
 
 static const struct section_64 *
@@ -389,9 +416,9 @@ find_task(pid_t pid, kaddr_t *task) {
 
 static io_service_t
 get_serv(const char *name) {
-    io_service_t serv = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching(name));
-    
-    return MACH_PORT_VALID(serv) ? serv : IO_OBJECT_NULL;
+	io_service_t serv = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching(name));
+
+	return MACH_PORT_VALID(serv) ? serv : IO_OBJECT_NULL;
 }
 
 static kaddr_t
@@ -539,35 +566,51 @@ entangle_nonce(uint64_t nonce, const void *key) {
     }
 }
 
+static void
+entangle_nonce(uint64_t nonce, const void *key) {
+	uint8_t entangled_nonce[SHA384_DIGEST_LENGTH];
+	uint64_t src[] = { 0, nonce }, dst[2];
+	size_t i, out_sz;
+
+	if(CCCrypt(kCCEncrypt, kCCAlgorithmAES128, 0, key, kCCKeySizeAES128, NULL, src, sizeof(src), dst, sizeof(dst), &out_sz) == kCCSuccess && out_sz == sizeof(dst)) {
+		CC_SHA384(dst, sizeof(dst), entangled_nonce);
+		printf("entangled_nonce: ");
+		for(i = 0; i < sizeof(entangled_nonce); ++i) {
+			printf("%02" PRIx8, entangled_nonce[i]);
+		}
+		putchar('\n');
+	}
+}
+
 int
 main(int argc, char **argv) {
-    kaddr_t kbase, kslide;
-    pfinder_t pfinder;
-    uint32_t key[4];
-    uint64_t nonce;
-    
-    if(argc > 1 && sscanf(argv[1], "0x%016" PRIx64, &nonce) == 1) {
-        if(init_arm_pgshift() == KERN_SUCCESS) {
-            printf("arm_pgshift: %u\n", arm_pgshift);
-            if(init_tfp0() == KERN_SUCCESS) {
-                printf("tfp0: 0x%" PRIx32 "\n", tfp0);
-                if((kbase = get_kbase(&kslide))) {
-                    printf("kbase: " KADDR_FMT "\n", kbase);
-                    printf("kslide: " KADDR_FMT "\n", kslide);
-                    if(pfinder_init(&pfinder, kbase) == KERN_SUCCESS) {
-                        if(pfinder_init_offsets(pfinder) == KERN_SUCCESS) {
-                            dimentio(nonce);
-                            if(argc == 3 && sscanf(argv[2], "0x%08" PRIx32 "%08" PRIx32 "%08" PRIx32 "%08" PRIx32, &(key[0]), &(key[1]), &(key[2]), &(key[3])) == 4) {
-                                entangle_nonce(nonce, key);
-                            }
-                        }
-                        pfinder_term(&pfinder);
-                    }
-                }
-                mach_port_deallocate(mach_task_self(), tfp0);
-            }
-        }
-    } else {
-        printf("Usage: %s nonce [key_8a3]\n", argv[0]);
-    }
+	kaddr_t kbase, kslide;
+	pfinder_t pfinder;
+	uint32_t key[4];
+	uint64_t nonce;
+
+	if(argc > 1 && sscanf(argv[1], "0x%016" PRIx64, &nonce) == 1) {
+		if(init_arm_pgshift() == KERN_SUCCESS) {
+			printf("arm_pgshift: %u\n", arm_pgshift);
+			if(init_tfp0() == KERN_SUCCESS) {
+				printf("tfp0: 0x%" PRIx32 "\n", tfp0);
+				if((kbase = get_kbase(&kslide))) {
+					printf("kbase: " KADDR_FMT "\n", kbase);
+					printf("kslide: " KADDR_FMT "\n", kslide);
+					if(pfinder_init(&pfinder, kbase) == KERN_SUCCESS) {
+						if(pfinder_init_offsets(pfinder) == KERN_SUCCESS) {
+							dimentio(nonce);
+							if(argc == 3 && sscanf(argv[2], "0x%08" PRIx32 "%08" PRIx32 "%08" PRIx32 "%08" PRIx32, &(key[0]), &(key[1]), &(key[2]), &(key[3])) == 4) {
+								entangle_nonce(nonce, key);
+							}
+						}
+						pfinder_term(&pfinder);
+					}
+				}
+				mach_port_deallocate(mach_task_self(), tfp0);
+			}
+		}
+	} else {
+		printf("Usage: %s nonce [key_8a3]\n", argv[0]);
+	}
 }
