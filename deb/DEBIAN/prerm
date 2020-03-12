@@ -1,0 +1,5 @@
+#!/bin/bash
+echo "Removing Dimentio"
+rm  /usr/bin/dimentio
+echo "Finished!"
+exit 0
