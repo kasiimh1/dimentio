@@ -1,6 +1,6 @@
 #!/bin/bash
 echo "Copying Dimentio..."
-cp /usr/bin/dimentio /usr/bin/
+cp dimentio /usr/bin/
 echo "Running chmod +x on the binary..."
 chmod +x /usr/bin/dimentio
 echo "Finished!"
