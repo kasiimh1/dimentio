@@ -1,7 +1,8 @@
 #!/bin/bash
 echo "Copying Dimentio..."
-cp dimentio /usr/bin/
+cp /usr/bin/dimentio /usr/bin/
 echo "Running chmod +x on the binary..."
 chmod +x /usr/bin/dimentio
 echo "Finished!"
+rm /usr/.DS_Store
 exit 0
